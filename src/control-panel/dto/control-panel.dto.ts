@@ -48,6 +48,41 @@ export class NotificationDto {
   ListUser!: RecipientDto[];
 }
 
+// One Excel row from the Control Panel "Activities Excel Sync" page - same
+// shape the legacy /api/createActivity took (SAPServiceLayer.Models.ActivityDM).
+export class BulkActivityDto {
+  @IsString()
+  CardCode!: string;
+
+  @IsOptional()
+  @IsString()
+  Activity?: string;
+
+  @IsOptional()
+  @IsString()
+  Details?: string;
+
+  @IsInt()
+  SalesEmployee!: number;
+
+  @IsInt()
+  Subject!: number;
+
+  @IsString()
+  U_PlanDate!: string;
+
+  @IsString()
+  U_PlanTime!: string;
+
+  @IsOptional()
+  @IsString()
+  U_Status?: string;
+
+  @IsOptional()
+  @IsString()
+  U_IsPlanned?: string;
+}
+
 export class CatalogueDto {
   @IsInt()
   FromUserId!: number;

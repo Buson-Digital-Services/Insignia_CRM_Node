@@ -1,5 +1,5 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 // Every hand-written endpoint in this API returns {status, message, data?} -
 // this makes thrown/unhandled errors match that same envelope instead of
@@ -24,6 +24,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       this.logger.error(exception instanceof Error ? exception.stack : exception);
     }
 
-    res.status(statusCode).json({ status: false, message: Array.isArray(message) ? message.join(', ') : message });
+    const text = Array.isArray(message) ? message.join(', ') : message;
+    // Sellerkit doubles as the shops' Queryurl, whose old service answered { status, msg, data }.
+    const legacyQuery = /\/sellerkit\/?$/i.test(ctx.getRequest<Request>().path) ? { msg: text, data: null } : {};
+    res.status(statusCode).json({ status: false, message: text, ...legacyQuery });
   }
 }

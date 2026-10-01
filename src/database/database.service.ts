@@ -19,19 +19,20 @@ export class DatabaseService implements OnModuleDestroy {
   }
 
   private async getPool(tenantCode: string, kind: DbKind): Promise<sql.ConnectionPool> {
-    const key = this.poolKey(tenantCode, kind);
+    const tenant = this.tenants.get(tenantCode);
+    const key = this.poolKey(tenant.code, kind);
     const existing = this.pools.get(key);
     if (existing?.connected) {
       return existing;
     }
 
-    const tenant = this.tenants.get(tenantCode);
     const conn: SqlConnectionConfig = kind === 'app' ? tenant.db : tenant.sapDb;
     const pool = new sql.ConnectionPool({
       server: conn.server,
       database: conn.database,
       user: conn.user,
       password: conn.password,
+      domain: conn.domain, // mssql switches to NTLM (Windows login) when this is set
       options: { encrypt: false, trustServerCertificate: true },
     });
     await pool.connect();
@@ -57,6 +58,20 @@ export class DatabaseService implements OnModuleDestroy {
     this.bindParams(request, params);
     const result = await request.query<T>(text);
     return result.recordset;
+  }
+
+  /** Parameterized multi-statement query (e.g. header SELECT + lines SELECT). Returns every recordset. */
+  async querySets<T = Record<string, unknown>>(
+    tenantCode: string,
+    kind: DbKind,
+    text: string,
+    params: Record<string, unknown> = {},
+  ): Promise<T[][]> {
+    const pool = await this.getPool(tenantCode, kind);
+    const request = pool.request();
+    this.bindParams(request, params);
+    const result = await request.query<T>(text);
+    return (result.recordsets as unknown as T[][]) ?? [];
   }
 
   /** Stored procedure call. Returns the first recordset (the common case). */

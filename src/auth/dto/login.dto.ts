@@ -2,7 +2,7 @@ import { IsOptional, IsString } from 'class-validator';
 
 export class LoginDto {
   @IsString()
-  tenantCode!: string; // shop/country code chosen on the login screen, e.g. "TZ"
+  tenantCode!: string; // code or country name from GET /api/tenants, e.g. "TZ" or "Tanzania"
 
   @IsString()
   userCode!: string;

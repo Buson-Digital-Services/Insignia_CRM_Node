@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import tls from 'node:tls';
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
 import type { SapIdentity } from '../common/types.js';
@@ -9,6 +12,22 @@ interface SapSession {
   timeoutMs: number;
 }
 
+// Some shops' Service Layers use SAP's self-signed certificate (e.g. Kenya). Each one we
+// trust is saved as certs/*.pem and added to Node's default CA list; certificate and
+// hostname verification stay fully on for every connection.
+function trustSavedCertificates(dir = join(process.cwd(), 'certs')): string[] {
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.pem'));
+  } catch {
+    return [];
+  }
+  if (files.length > 0) {
+    tls.setDefaultCACertificates([...tls.getCACertificates('default'), ...files.map((f) => readFileSync(join(dir, f), 'utf8'))]);
+  }
+  return files;
+}
+
 // SAP B1 Service Layer needs a login per (url, companyDb, username) before any
 // call, and that session expires after ~30 min idle. Rather than log in on
 // every request, keep one session per unique combo and reuse it, relogging in
@@ -17,6 +36,13 @@ interface SapSession {
 export class SapService {
   private readonly logger = new Logger(SapService.name);
   private readonly sessions = new Map<string, SapSession>();
+
+  constructor() {
+    const trusted = trustSavedCertificates();
+    if (trusted.length > 0) {
+      this.logger.log(`Trusting Service Layer certificates: ${trusted.join(', ')}`);
+    }
+  }
 
   private key(identity: SapIdentity): string {
     return `${identity.sapUrl}|${identity.sapCompanyDb}|${identity.sapUsername}`;
@@ -36,8 +62,9 @@ export class SapService {
     });
 
     if (response.status !== 200) {
-      throw new Error(
-        `SAP login failed for ${identity.sapCompanyDb}/${identity.sapUsername}: ${response.status} ${JSON.stringify(response.data)}`,
+      throw Object.assign(
+        new Error(`SAP login failed for ${identity.sapCompanyDb}/${identity.sapUsername}: ${response.status} ${JSON.stringify(response.data)}`),
+        { status: response.status },
       );
     }
 
@@ -68,6 +95,11 @@ export class SapService {
       return existing;
     }
     return this.login(identity);
+  }
+
+  /** Fresh Service Layer login that never reuses a cached session - for checking a typed-in password. */
+  async checkCredentials(identity: SapIdentity): Promise<void> {
+    await this.login(identity);
   }
 
   /** Verifies the given SAP credentials work, throwing if not. Used at login time. */

@@ -1,9 +1,11 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../database/database.service.js';
+import { SapService } from '../sap/sap.service.js';
+import { TenantService } from '../tenant/tenant.service.js';
 import type { InsigRes } from '../common/types.js';
 import type { UserDetailsDto } from '../crm/dto/crm.dto.js';
-import type { CatalogueDto, EditUserDto, NotificationDto } from './dto/control-panel.dto.js';
+import type { BulkActivityDto, CatalogueDto, EditUserDto, NotificationDto } from './dto/control-panel.dto.js';
 import type { AdminJwtPayload } from './admin-jwt-payload.js';
 
 @Injectable()
@@ -11,6 +13,8 @@ export class ControlPanelService {
   constructor(
     private readonly db: DatabaseService,
     private readonly jwt: JwtService,
+    private readonly sap: SapService,
+    private readonly tenants: TenantService,
   ) {}
 
   private async proc<T = Record<string, unknown>>(tenantCode: string, procName: string, params: Record<string, unknown> = {}) {
@@ -23,7 +27,7 @@ export class ControlPanelService {
     if (rows.length === 0) {
       throw new UnauthorizedException('Invalid credentials');
     }
-    const payload: AdminJwtPayload = { role: 'admin', tenantCode: tenantCode.toUpperCase(), userName };
+    const payload: AdminJwtPayload = { role: 'admin', tenantCode: this.tenants.get(tenantCode).code, userName };
     return { status: true, message: 'Success', data: { accessToken: await this.jwt.signAsync(payload) } };
   }
 
@@ -32,7 +36,7 @@ export class ControlPanelService {
   }
 
   async userRoll(tenantCode: string, userRoll: number) {
-    return this.db.execProc(tenantCode, 'app', 'GetReportTo', { UserRoll: userRoll });
+    return this.db.execProc(tenantCode, 'app', 'GetReportTo', { Id: userRoll });
   }
 
   async userDetailsFromUserCode(tenantCode: string, id: string) {
@@ -67,19 +71,21 @@ export class ControlPanelService {
 
   async sendNotification(tenantCode: string, nt: NotificationDto): Promise<InsigRes> {
     return this.db.withTransaction(tenantCode, 'app', async (execProc) => {
-      const [header] = await execProc<{ FromUserID: number }>('Nt_InsertHeader', {
-        FromUserId: nt.FromUserId,
+      const [header] = await execProc<{ Id: number }>('Nt_InsertHeader', {
+        FromUserID: nt.FromUserId,
         MsgHeading: nt.MsgHeading,
-        Description: nt.Description,
-        ImageUrl: nt.ImageUrl ?? null,
+        MsgDescription: nt.Description,
+        ImgUrl: nt.ImageUrl ?? null,
       });
       if (!header) {
         return { status: false, message: 'No data found' };
       }
       for (const recipient of nt.ListUser) {
+        // Nt_GetMsg joins Nt_List.NtHeaderId = Nt_Header.Id - the legacy code passed the
+        // sender's FromUserID here, so recipients never saw the message.
         await execProc('Nt_HeaderList', {
-          FromUserID: header.FromUserID,
-          UserId: recipient.Id,
+          NtHeaderId: header.Id,
+          ToUserId: recipient.Id,
           IsSeen: recipient.IsSeen ?? false,
         });
       }
@@ -114,5 +120,42 @@ export class ControlPanelService {
       }
       return { status: true, message: 'Success' };
     });
+  }
+
+  // Port of legacy SLayer/Company.cs CreateActivities: runs as the shop-wide
+  // SAP account (TENANT_<CODE>_SAP_*), checks every CardCode exists before
+  // posting anything, then posts row by row. SAP has no multi-document
+  // transaction over Service Layer, so a mid-batch failure reports which rows
+  // already went in rather than pretending to roll back.
+  async bulkCreateActivities(tenantCode: string, rows: BulkActivityDto[]): Promise<InsigRes<{ created: number[] }>> {
+    const sap = this.tenants.get(tenantCode).sap;
+
+    for (const row of rows) {
+      const key = encodeURIComponent(row.CardCode.replace(/'/g, "''"));
+      try {
+        await this.sap.request(sap, 'get', `BusinessPartners('${key}')?$select=CardCode`);
+      } catch (err) {
+        return { status: false, message: `Invalid Customer Code (${row.CardCode}): ${(err as Error).message}`, data: { created: [] } };
+      }
+    }
+
+    const created: number[] = [];
+    for (const row of rows) {
+      try {
+        const activity = await this.sap.request<{ ClgCode: number }>(sap, 'post', 'Activities', {
+          ...row,
+          U_Status: row.U_Status ?? 'A',
+          U_IsPlanned: row.U_IsPlanned ?? 'Yes',
+        });
+        created.push(activity.ClgCode);
+      } catch (err) {
+        return {
+          status: false,
+          message: `Error on creating activity for Card Code ${row.CardCode} (${created.length} of ${rows.length} already created): ${(err as Error).message}`,
+          data: { created },
+        };
+      }
+    }
+    return { status: true, message: 'Activity created successfully.', data: { created } };
   }
 }

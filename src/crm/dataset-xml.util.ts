@@ -11,7 +11,7 @@ function escapeXml(value: unknown): string {
     .replace(/'/g, '&apos;');
 }
 
-export function buildDataSetXml(rowTag: string, rows: Array<Record<string, unknown>>): string {
+export function buildDataSetXml(rowTag: string, rows: Array<Record<string, unknown>>, root = 'DocumentElement'): string {
   const rowXml = rows
     .map((row) => {
       const fields = Object.entries(row)
@@ -20,5 +20,5 @@ export function buildDataSetXml(rowTag: string, rows: Array<Record<string, unkno
       return `<${rowTag}>${fields}</${rowTag}>`;
     })
     .join('');
-  return `<DocumentElement>${rowXml}</DocumentElement>`;
+  return `<${root}>${rowXml}</${root}>`;
 }

@@ -215,6 +215,10 @@ export class QuotationRequest {
   @IsString()
   CardCode!: string;
 
+  @IsOptional()
+  @IsString()
+  CardName?: string;
+
   @IsString()
   DocDate!: string;
 
@@ -239,14 +243,6 @@ export class QuotationRequest {
   @IsOptional()
   @IsString()
   NumAtCard?: string;
-
-  @IsOptional()
-  @IsNumber()
-  DiscountPercent?: number;
-
-  @IsOptional()
-  @IsInt()
-  series?: number;
 
   @IsArray()
   @ArrayNotEmpty()
@@ -303,11 +299,34 @@ export class SalesOrderLine {
   @IsOptional()
   @IsInt()
   BaseLine?: number;
+
+  // legacy line fields, accepted and ignored (see SalesOrderModel)
+  @IsOptional()
+  @IsString()
+  U_AMDD?: string;
+
+  @IsOptional()
+  @IsNumber()
+  valueAFdisc?: number;
 }
 
 export class SalesOrderModel {
   @IsString()
   CardCode!: string;
+
+  // Sent by the frontend (they were on the legacy .NET SalesOrderModel) but not used: accepted so the
+  // request validates, never forwarded to SAP. The order is always created open.
+  @IsOptional()
+  @IsString()
+  DocumentStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  AppVersion?: string;
+
+  @IsOptional()
+  @IsNumber()
+  DocTotal?: number;
 
   @IsOptional()
   @IsString()
@@ -597,63 +616,52 @@ export class UserDetailsDto {
   SlpCode?: string;
 }
 
-// ---- request bodies that pair a tenantCode with the above (used pre-login,
-// so tenantCode can't come from a JWT) ----
-
-export class UpdatePasswordDto {
-  @IsString()
-  tenantCode!: string;
-
-  @IsString()
-  deviceCode!: string;
-
-  @IsString()
-  password!: string;
-}
-
-export class CreateUserBody extends UserDetailsDto {
-  @IsString()
-  tenantCode!: string;
-}
+// ---- pre-login request bodies: field names are the legacy .NET models' (DeviceCodeResetReQ,
+// Vertion, AuthMenuList). The shop comes from the localURL the call is made under. ----
 
 export class ResetDeviceCodeDto {
   @IsString()
-  tenantCode!: string;
+  DeviceCode!: string;
 
   @IsString()
-  deviceCode!: string;
-
-  @IsString()
-  userCode!: string;
+  UserCode!: string;
 }
 
 export class PostVersionDto {
   @IsString()
-  tenantCode!: string;
+  vertion!: string;
 
   @IsString()
-  version!: string;
+  Url!: string;
 
   @IsString()
-  url!: string;
-
-  @IsString()
-  content!: string;
+  Content!: string;
 }
 
 export class MenuAuthDto {
+  @IsOptional()
+  @IsInt()
+  DocEntry?: number;
+
+  @IsInt()
+  UserKey!: number;
+
+  @IsInt()
+  MenuKey!: number;
+
   @IsString()
-  tenantCode!: string;
+  CompanyCode!: string;
 
   @IsInt()
-  userKey!: number;
+  AuthStatus!: number;
+}
+
+export class SellerkitDto {
+  /** Ignored - kept so the legacy request body still validates. The DB comes from the login. */
+  @IsOptional()
+  @IsString()
+  constr?: string;
 
   @IsString()
-  companyCode!: string;
-
-  @IsInt()
-  menuKey!: number;
-
-  @IsInt()
-  authStatus!: number;
+  query!: string;
 }

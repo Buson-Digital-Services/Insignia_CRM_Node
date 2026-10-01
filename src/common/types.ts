@@ -8,6 +8,7 @@ export interface SqlConnectionConfig {
   database: string;
   user: string;
   password: string;
+  domain?: string; // set => Windows (NTLM) login for `user`; unset => SQL Server login
 }
 
 export interface TenantConfig {
@@ -15,9 +16,27 @@ export interface TenantConfig {
   name: string; // e.g. "Tanzania"
   db: SqlConnectionConfig; // app DB: Users, MenuAuth, notifications, versions...
   sapDb: SqlConnectionConfig; // SAP-side mirror DB: items, customers, quotations, discount schemes...
+  urls: CountryUrls; // returned by GET /api/GetUrls/:country before login
+  // Rewrites the Service Layer address stored on users' rows (SAPUrl) without touching the DB,
+  // e.g. Kenya: https://insigniadxb.fortiddns.com:50000 -> https://192.168.10.22:50000 (the name on its certificate).
+  sapUrlRedirect?: { from: string[]; to: string };
+  // While testing: ignore the SAPUrl stored on users' rows and connect every user to `sap.sapUrl` (TENANT_<CODE>_SAP_URL).
+  sapUrlFromEnv?: boolean;
+  // Live-SAP protection while testing: every user's SAP session uses this company instead of
+  // the SapDB on their Users row (which points at the live company). Remove it to go live.
+  sapCompanyDbForUsers?: string;
+  sap: SapIdentity; // shop-wide Service Layer account, only for admin jobs (Control Panel bulk activity upload)
 }
 
 export type DbKind = 'app' | 'sapDb';
+
+export interface CountryUrls {
+  countryName: string;
+  queryURL: string;
+  localURL: string; // base URL the Flutter app appends GetLoginDetails/... to
+  reportURL: string;
+  schemeReq: boolean;
+}
 
 export interface SapIdentity {
   sapUrl: string; // Service Layer base URL, e.g. http://host:port/b1s/v1/
@@ -42,6 +61,11 @@ export interface JwtPayload {
   sub: number;
   userCode: string;
   tenantCode: string;
+}
+
+// What the mobile login JWT actually carries - JwtStrategy decrypts it into a JwtPayload.
+export interface SignedLoginToken {
+  encryptedClaims: string;
 }
 
 // What @CurrentUser() actually returns to a controller: the JWT claims plus

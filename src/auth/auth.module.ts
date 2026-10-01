@@ -9,11 +9,13 @@ import { JwtStrategy } from './jwt.strategy.js';
 import { SapIdentityCache } from './sap-identity-cache.service.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { SapModule } from '../sap/sap.module.js';
+import { TenantModule } from '../tenant/tenant.module.js';
 
 @Module({
   imports: [
     DatabaseModule,
     SapModule,
+    TenantModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

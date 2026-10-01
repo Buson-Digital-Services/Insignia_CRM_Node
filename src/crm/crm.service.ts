@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service.js';
 import { SapService } from '../sap/sap.service.js';
 import { EmailService } from './email.service.js';
+import { TenantService } from '../tenant/tenant.service.js';
 import { buildDataSetXml } from './dataset-xml.util.js';
+import * as Q from './sap-queries.js';
 import type { DbKind, InsigRes, SapIdentity } from '../common/types.js';
 import type {
   ActivitesDTO,
@@ -28,6 +30,7 @@ export class CrmService {
     private readonly db: DatabaseService,
     private readonly sap: SapService,
     private readonly email: EmailService,
+    private readonly tenants: TenantService,
   ) {}
 
   private generateOtp(): string {
@@ -46,13 +49,15 @@ export class CrmService {
     return rows.length > 0 ? { status: true, message: 'Success', data: rows } : { status: false, message: 'No data found' };
   }
 
-  private async runProcHeadLine(
-    tenantCode: string,
-    kind: DbKind,
-    proc: string,
-    params: Record<string, unknown>,
-  ): Promise<HeadLineResult> {
-    const [head, line] = await this.db.execProcSets(tenantCode, kind, proc, params);
+  // SAP-side reads run as plain queries (sap-queries.ts), not procs: shops' SAP DBs
+  // don't all have the custom procs and must not be changed.
+  private async runSapQuery<T = Record<string, unknown>>(tenantCode: string, text: string, params: Record<string, unknown> = {}): Promise<InsigRes<T[]>> {
+    const rows = await this.db.query<T>(tenantCode, 'sapDb', text, params);
+    return rows.length > 0 ? { status: true, message: 'Success', data: rows } : { status: false, message: 'No data found' };
+  }
+
+  private async runSapHeadLine(tenantCode: string, text: string, params: Record<string, unknown>): Promise<HeadLineResult> {
+    const [head, line] = await this.db.querySets(tenantCode, 'sapDb', text, params);
     if (!head?.length && !line?.length) {
       return { respType: 'No data found.', respCode: '500' };
     }
@@ -60,8 +65,14 @@ export class CrmService {
   }
 
   private async runDiscountCalc(tenantCode: string, proc: string, req: DiscountCalcRequest) {
+    // Shops with schemeReq=false (TENANT_<CODE>_SCHEME_REQ, also returned by GetUrls) have no
+    // usable scheme setup - their procs are missing or point at unavailable scheme DBs.
+    if (!this.tenants.get(tenantCode).urls.schemeReq) {
+      return { status: false, message: 'Discount schemes are not enabled for this country' };
+    }
     const xml = buildDataSetXml('SCHEMES', req.SCHEMES as unknown as Record<string, unknown>[]);
-    const rows = await this.db.execProc(tenantCode, 'sapDb', proc, { xml, mode: 1 });
+    // @DocEntry is only echoed into the result rows; the legacy API always passed 1 (positionally).
+    const rows = await this.db.execProc(tenantCode, 'sapDb', proc, { xml, DocEntry: 1 });
     return rows.length > 0 ? { status: true, message: 'Sucess', data: rows } : { status: false, message: 'No Data Found' };
   }
 
@@ -97,9 +108,13 @@ export class CrmService {
   }
 
   async triggerOtp(tenantCode: string, deviceCode: string): Promise<InsigRes> {
-    const [user] = await this.db.execProc<{ Email: string; UserName: string }>(tenantCode, 'app', 'Userdetails', {
-      DeviceCode: deviceCode,
-    });
+    // Not Userdetails: that proc also overwrites the user's FCMToken.
+    const [user] = await this.db.query<{ Email: string; UserName: string }>(
+      tenantCode,
+      'app',
+      'SELECT TOP 1 Email, UserName FROM Users WHERE DeviceCode = @DeviceCode',
+      { DeviceCode: deviceCode },
+    );
     if (!user) {
       return { status: false, message: 'No data found' };
     }
@@ -180,29 +195,30 @@ export class CrmService {
     return rows.length > 0 ? { status: true, msg: rows[0].Msg } : { status: false, msg: 'unable to reset the device code' };
   }
 
-  async getCountry(tenantCode: string, countryName: string) {
-    const rows = await this.db.query(tenantCode, 'app', 'SELECT * FROM CountryMaster WHERE CountryName = @CountryName', {
-      CountryName: countryName,
-    });
-    return rows.length > 0 ? { status: true, message: 'Success', country: rows[0] } : { status: false, message: 'No Data Found' };
-  }
-
   // ---- master data (read-only mirror of SAP's own tables) ----
 
-  itemMaster(tenantCode: string) {
-    return this.runProc(tenantCode, 'sapDb', 'BZ_POS_ItemMaster');
+  private readonly hasBrandField = new Map<string, boolean>();
+
+  async itemMaster(tenantCode: string, whsCode: string) {
+    let withBrand = this.hasBrandField.get(tenantCode.toUpperCase());
+    if (withBrand === undefined) {
+      const [col] = await this.db.query<{ len: number | null }>(tenantCode, 'sapDb', "SELECT COL_LENGTH('OITM', 'U_BRAND') AS len");
+      withBrand = col?.len != null;
+      this.hasBrandField.set(tenantCode.toUpperCase(), withBrand);
+    }
+    return this.runSapQuery(tenantCode, Q.ITEM_MASTER(withBrand), { whscode: whsCode });
   }
 
   customerMaster(tenantCode: string) {
-    return this.runProc(tenantCode, 'sapDb', 'BZ_POS_CustomerMaster');
+    return this.runSapQuery(tenantCode, Q.CUSTOMER_MASTER);
   }
 
   addressMaster(tenantCode: string) {
-    return this.runProc(tenantCode, 'sapDb', 'BZ_POS_AddressMaster');
+    return this.runSapQuery(tenantCode, Q.ADDRESS_MASTER);
   }
 
   getFilteredItemsInStock(tenantCode: string, search?: string, mainGroup?: string, subGroup?: string, whsCode?: string) {
-    return this.runProc(tenantCode, 'sapDb', 'GetFilteredItemsInstock', {
+    return this.runSapQuery(tenantCode, Q.FILTERED_ITEMS_IN_STOCK, {
       Search: search ?? null,
       MainGroup: mainGroup ?? null,
       SubGroup: subGroup ?? null,
@@ -211,11 +227,13 @@ export class CrmService {
   }
 
   getFilteredItems(tenantCode: string, search?: string, mainGroup?: string, subGroup?: string, packSize?: string) {
-    return this.runProc(tenantCode, 'sapDb', 'GetItems', {
-      Search: search ?? null,
-      MainGroup: mainGroup ?? null,
-      SubGroup: subGroup ?? null,
-      PackSize: packSize ?? null,
+    // The original GetItems proc treated '' and the string 'null' as "no filter".
+    const orNull = (v?: string) => (v && v !== 'null' ? v : null);
+    return this.runSapQuery(tenantCode, Q.ITEMS, {
+      Search: orNull(search),
+      MainGrp: orNull(mainGroup),
+      SubGrp: orNull(subGroup),
+      PackSize: orNull(packSize),
     });
   }
 
@@ -232,7 +250,7 @@ export class CrmService {
   }
 
   getPlanDetails(tenantCode: string, date: string | undefined, slpCode: number) {
-    return this.runProc(tenantCode, 'sapDb', 'GetPlanDetails', { date: date ?? null, slpcode: slpCode });
+    return this.runSapQuery(tenantCode, Q.PLAN_DETAILS, { selecteddate: date ?? null, slpcode: slpCode });
   }
 
   getCustomerDetailsBySalesperson(tenantCode: string, slpCode: number) {
@@ -240,19 +258,19 @@ export class CrmService {
   }
 
   getQuotationDetails(tenantCode: string, docEntry: number) {
-    return this.runProcHeadLine(tenantCode, 'sapDb', 'GetQuotationDetails', { docentry: docEntry });
+    return this.runSapHeadLine(tenantCode, Q.QUOTATION_DETAILS, { docentry: docEntry });
   }
 
   getOrderDetails(tenantCode: string, docEntry: number) {
-    return this.runProcHeadLine(tenantCode, 'sapDb', 'GetOrderDetails', { docentry: docEntry });
+    return this.runSapHeadLine(tenantCode, Q.ORDER_DETAILS, { docentry: docEntry });
   }
 
   getDraftDetails(tenantCode: string, docEntry: number) {
-    return this.runProcHeadLine(tenantCode, 'sapDb', 'GetDraftDetails', { docentry: docEntry });
+    return this.runSapHeadLine(tenantCode, Q.DRAFT_DETAILS, { docentry: docEntry });
   }
 
   getQuotationHeadLine(tenantCode: string, docEntry: number) {
-    return this.runProcHeadLine(tenantCode, 'sapDb', 'sp_GetQuotation', { docentry: docEntry });
+    return this.runSapHeadLine(tenantCode, Q.QUOTATION_FULL, { docentry: docEntry });
   }
 
   // ---- discount/scheme calculation (business logic lives entirely in SQL) ----
@@ -312,17 +330,64 @@ export class CrmService {
     return { status: true, message: 'Customer Created Successfully', data: created };
   }
 
-  async createQuotation(sap: SapIdentity, request: QuotationRequest): Promise<InsigRes<{ DocEntry: number }>> {
+  // SAP answers "No matching records found (-2028)" without saying which value it doesn't know. After such a
+  // failure (only then, so working documents pay nothing) look up what the client sent and name the values this
+  // company doesn't have. `objectCode`: '17' sales order, '23' quotation.
+  private async postDocument(
+    tenantCode: string,
+    identity: SapIdentity,
+    path: string,
+    payload: Record<string, unknown>,
+    refs: { objectCode: string; series?: number; cardCode?: string; salesPerson?: number; lines: { itemCode?: string; warehouse?: string; taxCode?: string }[] },
+  ): Promise<{ created: { DocEntry: number; DocNum?: number }; draft: boolean }> {
+    const ask = (sql: string, p: Record<string, unknown> = {}) => this.db.query<Record<string, unknown>>(tenantCode, 'sapDb', sql, p);
+    const [last] = await ask('SELECT ISNULL(MAX(DocEntry), 0) AS n FROM ODRF');
+    try {
+      return { created: await this.sap.request<{ DocEntry: number }>(identity, 'post', path, payload), draft: false };
+    } catch (err) {
+      if (!String((err as Error).message).includes('-2028')) throw err;
+      // When a document needs approval SAP saves it as a draft and the Service Layer still answers -2028 (it cannot
+      // read back an order that does not exist yet). The draft is real: find the one just created by this account.
+      const [draft] = await ask(
+        'SELECT TOP 1 D.DocEntry, D.DocNum FROM ODRF D INNER JOIN OUSR U ON U.USERID = D.UserSign WHERE D.DocEntry > @after AND D.ObjType = @type AND D.CardCode = @card AND U.USER_CODE = @user ORDER BY D.DocEntry DESC',
+        { after: last?.n ?? 0, type: refs.objectCode, card: refs.cardCode, user: identity.sapUsername.trim() },
+      );
+      if (draft) return { created: { DocEntry: Number(draft.DocEntry), DocNum: Number(draft.DocNum) }, draft: true };
+      const missing: string[] = [];
+      const check = async (label: string, value: unknown, sql: string, valid?: { sql: string; fmt: (r: Record<string, unknown>) => string }) => {
+        if (value === undefined || value === null || value === '' || (await ask(sql, { v: value })).length > 0) return;
+        const options = valid ? ` (valid: ${(await ask(valid.sql)).map(valid.fmt).join(', ') || 'none'})` : '';
+        missing.push(`${label} ${value}${options}`);
+      };
+      await check('Series', refs.series, `SELECT 1 FROM NNM1 WHERE Series = @v AND ObjectCode = '${refs.objectCode}'`, {
+        sql: `SELECT Series, SeriesName FROM NNM1 WHERE ObjectCode = '${refs.objectCode}'`,
+        fmt: (r) => `${r.Series}=${r.SeriesName}`,
+      });
+      await check('CardCode', refs.cardCode, 'SELECT 1 FROM OCRD WHERE CardCode = @v');
+      await check('SalesPersonCode', refs.salesPerson, 'SELECT 1 FROM OSLP WHERE SlpCode = @v');
+      for (const item of new Set(refs.lines.map((l) => l.itemCode))) await check('ItemCode', item, 'SELECT 1 FROM OITM WHERE ItemCode = @v');
+      for (const whs of new Set(refs.lines.map((l) => l.warehouse))) await check('WarehouseCode', whs, 'SELECT 1 FROM OWHS WHERE WhsCode = @v');
+      for (const tax of new Set(refs.lines.map((l) => l.taxCode))) {
+        await check('TaxCode', tax, "SELECT 1 FROM OVTG WHERE Code = @v AND Category = 'O'", {
+          sql: "SELECT Code FROM OVTG WHERE Category = 'O' AND Inactive = 'N'",
+          fmt: (r) => String(r.Code),
+        });
+      }
+      if (missing.length === 0) throw err;
+      throw new BadRequestException(`SAP rejected the document - not found in this company: ${missing.join('; ')}`);
+    }
+  }
+
+  async createQuotation(sap: SapIdentity, request: QuotationRequest, tenantCode: string): Promise<InsigRes<{ DocEntry: number; DocNum?: number; IsDraft?: boolean }>> {
     const payload = {
       CardCode: request.CardCode,
+      CardName: request.CardName || undefined,
       DocDate: request.DocDate,
       DocDueDate: request.DocDueDate,
       TaxDate: request.TaxDate,
       Comments: request.Comments,
       SalesPersonCode: request.SalesPersonCode,
-      Series: request.series,
       NumAtCard: request.NumAtCard || undefined,
-      DiscountPercent: request.DiscountPercent && request.DiscountPercent > 0 ? request.DiscountPercent : undefined,
       U_DeviceTransID: request.U_DeviceTransID || undefined,
       AddressExtension: request.AddressExtension,
       DocumentLines: request.DocumentLines.map((line) => ({
@@ -332,24 +397,31 @@ export class CrmService {
         Quantity: line.Quantity,
         Price: line.UnitPrice && line.UnitPrice > 0 ? line.UnitPrice : undefined,
         WarehouseCode: line.WarehouseCode,
-        TaxCode: line.TaxCode,
+        VatGroup: line.TaxCode, // Service Layer ignores TaxCode on lines; VatGroup is the tax field
         Currency: line.Currency,
       })),
     };
 
-    const created = await this.sap.request<{ DocEntry: number }>(sap, 'post', 'Quotations', payload);
-    return { status: true, message: 'Quotation Created sucessfully', data: created };
+    const { created, draft } = await this.postDocument(tenantCode, sap, 'Quotations', payload, {
+      objectCode: '23',
+      cardCode: request.CardCode,
+      salesPerson: request.SalesPersonCode,
+      lines: request.DocumentLines.map((l) => ({ itemCode: l.ItemCode, warehouse: l.WarehouseCode, taxCode: l.TaxCode })),
+    });
+    return draft
+      ? { status: true, message: 'Quotation needs approval. Hence saved as Draft!!!', data: { ...created, IsDraft: true } }
+      : { status: true, message: 'Quotation Created sucessfully', data: created };
   }
 
   async updateQuotation(sap: SapIdentity, docEntry: number, request: QuotationRequest): Promise<InsigRes> {
     const payload = {
+      CardName: request.CardName || undefined,
       DocDate: request.DocDate,
       DocDueDate: request.DocDueDate,
       TaxDate: request.TaxDate,
       Comments: request.Comments,
       SalesPersonCode: request.SalesPersonCode,
       NumAtCard: request.NumAtCard || undefined,
-      DiscountPercent: request.DiscountPercent && request.DiscountPercent > 0 ? request.DiscountPercent : undefined,
       U_DeviceTransID: request.U_DeviceTransID || undefined,
       AddressExtension: request.AddressExtension,
       // Service Layer replaces DocumentLines wholesale on PATCH - matches the
@@ -361,7 +433,7 @@ export class CrmService {
         Price: line.UnitPrice && line.UnitPrice > 0 ? line.UnitPrice : undefined,
         DiscountPercent: line.DiscountPercent,
         WarehouseCode: line.WarehouseCode,
-        TaxCode: line.TaxCode,
+        VatGroup: line.TaxCode, // Service Layer ignores TaxCode on lines; VatGroup is the tax field
         Currency: line.Currency,
       })),
     };
@@ -370,7 +442,53 @@ export class CrmService {
     return { status: true, message: 'Quotation Updated Successfully' };
   }
 
-  async createSalesOrder(sap: SapIdentity, model: SalesOrderModel): Promise<InsigRes<{ DocEntry: number }>> {
+  // Which approval (if any) an order needs: runs the shop's BZ_CRM_CHeckApproval proc, which returns the SAP
+  // account the order must be created under (credit limit, credit days, cash, NC products...) and a message.
+  // The account's password comes from the DB and never leaves the server. Fails closed: a failing check
+  // stops the order (only "this shop has no such proc" - e.g. Zambia - skips it).
+  private async checkApproval(tenantCode: string, model: SalesOrderModel): Promise<{ sapUser: string; sapPassword: string; message: string } | null> {
+    const lines: { itemCode: string; warehouse: string; qty: number; price: number; net: number; rate: number }[] = [];
+    for (const line of model.DocumentLines) {
+      if (line.BaseEntry && line.BaseEntry > 0) {
+        // a line copied from a quotation: its item, price, discount and tax come from that quotation line
+        const [q] = await this.db.query<{ ItemCode: string; WhsCode: string; Price: number; DiscPrcnt: number; VatPrcnt: number }>(
+          tenantCode,
+          'sapDb',
+          'SELECT ItemCode, WhsCode, Price, DiscPrcnt, VatPrcnt FROM QUT1 WHERE DocEntry = @DocEntry AND LineNum = @LineNum',
+          { DocEntry: line.BaseEntry, LineNum: line.BaseLine ?? 0 },
+        );
+        if (q) {
+          lines.push({ itemCode: q.ItemCode, warehouse: line.WarehouseCode || q.WhsCode, qty: line.Quantity, price: q.Price, net: line.Quantity * q.Price * (1 - (q.DiscPrcnt ?? 0) / 100), rate: q.VatPrcnt ?? 0 });
+        }
+      } else {
+        const [tax] = line.TaxCode ? await this.db.query<{ Rate: number }>(tenantCode, 'sapDb', 'SELECT Rate FROM OVTG WHERE Code = @Code', { Code: line.TaxCode }) : [];
+        const price = line.UnitPrice ?? 0;
+        lines.push({ itemCode: line.ItemCode ?? '', warehouse: line.WarehouseCode ?? '', qty: line.Quantity, price, net: line.Quantity * price * (1 - (line.DiscountPercent ?? 0) / 100), rate: tax?.Rate ?? 0 });
+      }
+    }
+    // Worked out here, never taken from the request: a client-supplied total could dodge the credit-limit check.
+    const docTotal = Math.round(lines.reduce((sum, l) => sum + l.net * (1 + l.rate / 100), 0) * 100) / 100;
+    const xml = buildDataSetXml(
+      'SCHEMES',
+      lines.map((l, i) => ({ LineNum: i + 1, ItemCode: l.itemCode, Quantity: l.qty, PriceBefDi: l.price, U_Cartons: 0, Balance: 0, Customer: model.CardCode, Warehouse: l.warehouse })),
+      'DocumentElements',
+    );
+
+    let rows: { SAPName?: string | null; SAPPassword?: string | null; RespMessage?: string | null }[];
+    try {
+      rows = await this.db.execProc(tenantCode, 'sapDb', 'BZ_CRM_CHeckApproval', { CardCode: model.CardCode, DocTotal: docTotal, xml });
+    } catch (err) {
+      if ((err as { number?: number }).number === 2812) return null; // no approval procedure in this shop's SAP DB
+      throw err;
+    }
+    const r = rows?.[0];
+    return r?.SAPName && r.SAPPassword ? { sapUser: r.SAPName, sapPassword: r.SAPPassword, message: r.RespMessage || 'Sales Order Created' } : null;
+  }
+
+  async createSalesOrder(sap: SapIdentity, model: SalesOrderModel, tenantCode: string): Promise<InsigRes<{ DocEntry: number; DocNum?: number; IsDraft?: boolean }>> {
+    const approval = await this.checkApproval(tenantCode, model);
+    // Created under the approval account when one is required, so SAP routes it to the right approver.
+    const acting: SapIdentity = approval ? { ...sap, sapUsername: approval.sapUser, sapPassword: approval.sapPassword } : sap;
     const payload = {
       CardCode: model.CardCode,
       CardName: model.CardName,
@@ -403,7 +521,7 @@ export class CrmService {
               Quantity: line.Quantity,
               UnitPrice: line.UnitPrice,
               DiscountPercent: line.DiscountPercent,
-              TaxCode: line.TaxCode,
+              VatGroup: line.TaxCode,
               ShipDate: line.ShipDate,
               WarehouseCode: line.WarehouseCode,
               Currency: line.Currency,
@@ -411,8 +529,19 @@ export class CrmService {
       ),
     };
 
-    const created = await this.sap.request<{ DocEntry: number }>(sap, 'post', 'Orders', payload);
-    return { status: true, message: 'Sales Order Created', data: created };
+    const { created, draft } = await this.postDocument(tenantCode, acting, 'Orders', payload, {
+      objectCode: '17',
+      series: model.Series,
+      cardCode: model.CardCode,
+      salesPerson: model.SalesPersonCode,
+      // lines copied from a quotation carry no item/tax of their own
+      lines: model.DocumentLines.filter((l) => !(l.BaseEntry && l.BaseEntry > 0)).map((l) => ({ itemCode: l.ItemCode, warehouse: l.WarehouseCode, taxCode: l.TaxCode })),
+    });
+    return {
+      status: true,
+      message: approval?.message ?? (draft ? 'Document needs approval. Hence saved as Draft!!!' : 'Sales Order Created'),
+      data: draft ? { ...created, IsDraft: true } : created,
+    };
   }
 
   async saveDraftAsDocument(sap: SapIdentity, docEntry: number): Promise<InsigRes> {
