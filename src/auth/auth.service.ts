@@ -200,6 +200,7 @@ export class AuthService {
       Queryurl: s(urls.queryURL),
       Localurl: s(urls.localURL),
       Reporturl: s(urls.reportURL),
+      CurrencyCode: s(tenant.currency),
       TenantCode: tenantCode,
     });
 

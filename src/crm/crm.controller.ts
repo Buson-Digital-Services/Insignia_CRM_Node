@@ -10,6 +10,7 @@ import { ShopCode, int } from '../tenant/shop-code.decorator.js';
 import type { AuthenticatedRequestUser } from '../common/types.js';
 import {
   ActivitesDTO,
+  FeedbackDTO,
   BusinessPartnerRequest,
   CheckedInDTO,
   CheckedoutDTO,
@@ -191,6 +192,13 @@ export class CrmController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('GetSalesSummary')
+  @ApiQuery({ name: 'date', required: false, type: String, format: 'date', description: 'Calendar date (YYYY-MM-DD); defaults to today' })
+  getSalesSummary(@CurrentUser() user: AuthenticatedRequestUser, @Query('date') date: string | undefined, @Query('slpcode') slpCode: string) {
+    return this.crm.getSalesSummary(user.tenantCode, date, int('slpcode', slpCode));
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('GetCustomerDetails')
   getCustomerDetailsBySalesperson(@CurrentUser() user: AuthenticatedRequestUser, @Query('slpcode') slpCode: string) {
     return this.crm.getCustomerDetailsBySalesperson(user.tenantCode, int('slpcode', slpCode));
@@ -337,6 +345,13 @@ export class CrmController {
   @HttpCode(200)
   createActivity(@CurrentUser() user: AuthenticatedRequestUser, @Body() body: ActivitesDTO) {
     return this.crm.createActivity(user.sap, body);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('SaveFeedback')
+  @HttpCode(200)
+  saveFeedback(@CurrentUser() user: AuthenticatedRequestUser, @Body() body: FeedbackDTO) {
+    return this.crm.saveFeedback(user.sap, user.tenantCode, body);
   }
 
   @UseGuards(JwtAuthGuard)

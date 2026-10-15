@@ -36,6 +36,7 @@ export class TenantService {
             reportURL: this.config.getOrThrow<string>(`${prefix}_REPORT_URL`),
             schemeReq: this.config.getOrThrow<string>(`${prefix}_SCHEME_REQ`).toLowerCase() === 'true',
           },
+          currency: this.config.get<string>(`${prefix}_CURRENCY`)?.trim().toUpperCase() || undefined,
           db: conn('DB'),
           sapDb: conn('SAPDB'),
           sapUrlFromEnv: this.config.get<string>(`${prefix}_SAP_URL_FROM_ENV`)?.trim().toLowerCase() === 'true',

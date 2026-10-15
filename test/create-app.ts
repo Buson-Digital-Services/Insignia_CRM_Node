@@ -10,6 +10,7 @@ export interface MockDatabaseService {
   execProc: Mock;
   execProcSets: Mock;
   query: Mock;
+  querySets: Mock;
   withTransaction: Mock;
 }
 

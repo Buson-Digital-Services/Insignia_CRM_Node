@@ -50,7 +50,7 @@ const byKey: Record<string, { code: string; name: string; urls?: unknown; sapUrl
   KE: { code: 'KE', name: 'Kenya' },
   KENYA: { code: 'KE', name: 'Kenya' },
 };
-for (const t of Object.values(byKey)) Object.assign(t, { urls: { queryURL: 'env-q', localURL: 'env-l', reportURL: 'env-r' } });
+for (const t of Object.values(byKey)) Object.assign(t, { urls: { queryURL: 'env-q', localURL: 'env-l', reportURL: 'env-r' }, currency: 'KES' });
 const tenants = { get: (c: string) => byKey[c.toUpperCase()] };
 
 const dto: LoginDto = { tenantCode: 'TZ', userCode: 'JANET', password: '1234', deviceCode: 'device-1' };
@@ -163,6 +163,7 @@ describe('AuthService', () => {
       Queryurl: 'env-q', // always the .env URLs GetUrls returned, not the DB's CountryMaster row
       Localurl: 'env-l',
       Reporturl: 'env-r',
+      CurrencyCode: 'KES',
       TenantCode: 'TZ',
     });
   });
@@ -187,7 +188,7 @@ describe('AuthService', () => {
 
     await service.login(dto);
 
-    expect(decryptClaims(jwt.signAsync.mock.calls[0][0].encryptedClaims)).toMatchObject({ Queryurl: 'env-q', Localurl: 'env-l', Reporturl: 'env-r' });
+    expect(decryptClaims(jwt.signAsync.mock.calls[0][0].encryptedClaims)).toMatchObject({ Queryurl: 'env-q', Localurl: 'env-l', Reporturl: 'env-r', CurrencyCode: 'KES' });
   });
 
   it('calls the stored proc against the caller-chosen tenant, not a hardcoded one', async () => {

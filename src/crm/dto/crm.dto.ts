@@ -665,3 +665,50 @@ export class SellerkitDto {
   @IsString()
   query!: string;
 }
+
+// Customer feedback / complaint, saved as a SAP Activity (OCLG) with its existing fields.
+export class FeedbackDTO {
+  @IsString()
+  CardCode!: string;
+
+  @IsInt()
+  SalesEmployee!: number;
+
+  // SAP activity subject code; defaults to the shop's "Customer Feedback" subject.
+  @IsOptional()
+  @IsInt()
+  Subject?: number;
+
+  // Remarks
+  @IsOptional()
+  @IsString()
+  Details?: string;
+
+  @IsOptional()
+  @IsString()
+  U_PrdCd?: string;
+
+  @IsOptional()
+  @IsString()
+  U_Complaints?: string;
+
+  @IsOptional()
+  @IsString()
+  U_AppTyp?: string;
+
+  @IsOptional()
+  @IsString()
+  U_Link1?: string;
+
+  @IsOptional()
+  @IsString()
+  U_Link2?: string;
+
+  @IsOptional()
+  @IsString()
+  U_Link3?: string;
+
+  @IsOptional()
+  @IsString()
+  U_Link4?: string;
+}

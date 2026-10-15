@@ -140,3 +140,29 @@ describe('CrmService.createSalesOrder when SAP saves the document as an approval
   });
 });
 
+describe('CrmService.getCustomerDetailsBySalesperson', () => {
+  it("adds each customer's tax code to the rows of the shop's own procedure (O1 when the customer has none)", async () => {
+    const { svc, db } = make(
+      async () => [{ CardCode: 'C1', CardName: 'One' }, { CardCode: 'C2', CardName: 'Two' }, { CardCode: 'C9', CardName: 'Not in the tax list' }],
+      async () => [{ CardCode: 'C1', TaxCode: 'O7' }, { CardCode: 'C2', TaxCode: 'O1' }],
+    );
+    const res = await svc.getCustomerDetailsBySalesperson('ZM', 17);
+    expect(res).toEqual({
+      status: true,
+      message: 'Success',
+      data: [
+        { CardCode: 'C1', CardName: 'One', TaxCode: 'O7' },
+        { CardCode: 'C2', CardName: 'Two', TaxCode: 'O1' },
+        { CardCode: 'C9', CardName: 'Not in the tax list', TaxCode: 'O1' },
+      ],
+    });
+    expect(db.execProc).toHaveBeenCalledWith('ZM', 'sapDb', 'BZ_CRM_GET_CUST_SLPCODE', { slpcode: 17 }); // the shop's own proc, unchanged
+  });
+
+  it('answers "No data found" without any tax lookup when the procedure returns nothing', async () => {
+    const { svc, db } = make(async () => []);
+    expect(await svc.getCustomerDetailsBySalesperson('KE', 5)).toEqual({ status: false, message: 'No data found' });
+    expect(db.query).not.toHaveBeenCalled();
+  });
+});
+

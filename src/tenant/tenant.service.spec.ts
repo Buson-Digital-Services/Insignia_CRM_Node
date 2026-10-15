@@ -109,6 +109,12 @@ describe('TenantService', () => {
     expect(service.get('TZ').urls.schemeReq).toBe(true);
   });
 
+  it('reads the shop currency code (upper-cased); unset means none', () => {
+    const service = new TenantService(makeConfig({ ...env, TENANT_KE_CURRENCY: 'kes' }));
+    expect(service.get('KE').currency).toBe('KES');
+    expect(service.get('TZ').currency).toBeUndefined();
+  });
+
   it('looks up a tenant case-insensitively', () => {
     const service = new TenantService(makeConfig(env));
     expect(service.get('tz').name).toBe('Tanzania');

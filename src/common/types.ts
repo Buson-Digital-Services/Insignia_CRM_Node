@@ -17,6 +17,7 @@ export interface TenantConfig {
   db: SqlConnectionConfig; // app DB: Users, MenuAuth, notifications, versions...
   sapDb: SqlConnectionConfig; // SAP-side mirror DB: items, customers, quotations, discount schemes...
   urls: CountryUrls; // returned by GET /api/GetUrls/:country before login
+  currency?: string; // ISO code (TZS, KES, UGX, ZMW) from TENANT_<CODE>_CURRENCY; sent as the login claim CurrencyCode
   // Rewrites the Service Layer address stored on users' rows (SAPUrl) without touching the DB,
   // e.g. Kenya: https://insigniadxb.fortiddns.com:50000 -> https://192.168.10.22:50000 (the name on its certificate).
   sapUrlRedirect?: { from: string[]; to: string };

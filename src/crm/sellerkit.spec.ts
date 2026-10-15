@@ -17,6 +17,7 @@ describe('parseSellerkitQuery', () => {
   it('accepts the other approved dashboard queries exactly as sent', () => {
     expect(parseSellerkitQuery("select * from ocrg where Grouptype = 'c'")).toEqual({ sql: 'select * from OCRG where GroupType = @p0', params: { p0: 'c' } });
     expect(parseSellerkitQuery('Select GroupNum, PymntGroup from OCTG')).toEqual({ sql: 'Select GroupNum, PymntGroup from OCTG', params: {} });
+    expect(parseSellerkitQuery("SELECT slpcode, slpname FROM OSLP WHERE Active = 'Y' ORDER BY slpname").params).toEqual({ p0: 'Y' });
     expect(parseSellerkitQuery('Select territryID, descript From OTER where parent > 0')).toEqual({ sql: 'Select territryID, descript From OTER where parent > @p0', params: { p0: 0 } });
     expect(
       parseSellerkitQuery("SELECT ItemCode, WhsCode AS WarehouseCode, IsCommited AS Committed, OnOrder AS Ordered FROM OITW WHERE ItemCode = 'AEM/104' and WhsCode='KEFG' ORDER BY WhsCode;"),
@@ -118,6 +119,20 @@ describe('parseSellerkitQuery', () => {
     expect(r.params).toEqual({ p0: 1, p1: 'Yes', p2: 'A' });
     expect(r.sql).toContain('where T0.SlpCode = @p0 and U_CheckedIn = @p1 and U_Status = @p2');
     expect(r.sql).toContain('Inner Join OCLS T2 on T2.Code'); // aliases with digits stay intact
+  });
+
+  it('accepts the document-details procs by DocEntry, in any letter case, and rejects anything else', () => {
+    const r = parseSellerkitQuery('[Getdraftdetails] 102');
+    expect(r.params).toEqual({ docentry: 102 });
+    expect(r.sql).toContain('FROM ODRF T0');
+    expect(parseSellerkitQuery('exec GetOrderDetails 7').sql).toContain('FROM ORDR T0');
+    expect(parseSellerkitQuery("[GetQuotationDetails] '9'").sql).toContain('FROM OQUT T0');
+    expect(parseSellerkitQuery('sp_GetQuotation 3').sql).toContain('OQUT');
+    for (const q of ['[GetDraftDetails] 1', '[GetOrderDetails] 1', '[GetQuotationDetails] 1', 'sp_GetQuotation 1']) expect(parseSellerkitQuery(q).withLines, q).toBe(true); // header + items
+    expect(parseSellerkitQuery('BZ_CRM_SalesType').withLines).toBeUndefined();
+    for (const bad of ['[GetDraftDetails]', '[GetDraftDetails] abc', '[GetDraftDetails] 1 OR 1=1', '[GetDraftDetails] 1, 2', '[GetDraftDetails] 102; DROP TABLE ODRF']) {
+      expect(() => parseSellerkitQuery(bad), bad).toThrow();
+    }
   });
 
   it('matches regardless of spacing/case and lets the values vary - including hostile ones, which stay data', () => {

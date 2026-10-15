@@ -26,6 +26,7 @@ for (const [code, name] of [
     [`${p}_LOCAL_URL`]: `http://test:3000/api/${name}/`,
     [`${p}_REPORT_URL`]: `http://test/${code}/report`,
     [`${p}_SCHEME_REQ`]: 'false',
+    [`${p}_CURRENCY`]: code === 'TZ' ? 'TZS' : 'KES',
     [`${p}_DB_SERVER`]: 'localhost',
     [`${p}_DB_NAME`]: `CRM_${code}_TEST`,
     [`${p}_DB_USER`]: 'sa',

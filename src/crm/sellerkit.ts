@@ -12,9 +12,16 @@ import * as Q from './sap-queries.js';
 //    through the caller's own SAP Service Layer session instead of a direct table UPDATE.
 type Param = { name: string; type: 'int' | 'decimal' | 'date' | 'string' | 'xml' };
 export type SapAction = { method: 'patch'; path: string; body: Record<string, unknown> };
-const PROCS: Record<string, { sql?: string; proc?: string; sap?: (p: Record<string, unknown>) => SapAction; params: Param[] }> = {
+const PROCS: Record<string, { sql?: string; proc?: string; withLines?: boolean; sap?: (p: Record<string, unknown>) => SapAction; params: Param[] }> = {
   GetSalesPersonDetails: { sql: Q.SALES_PERSON_DETAILS, params: [{ name: 'SlpCode', type: 'int' }] },
   BZ_CRM_SalesType: { sql: Q.SALES_TYPES, params: [] },
+  // Document details by DocEntry. The shop procs return a header and the lines as two result sets (missing in some shops'
+  // SAP DBs, so SQL here). The legacy Sellerkit kept only the header; withLines attaches the items to the header row
+  // as `DocumentLines`, so the header fields stay where they were.
+  GetDraftDetails: { sql: Q.DRAFT_DETAILS, withLines: true, params: [{ name: 'docentry', type: 'int' }] },
+  GetOrderDetails: { sql: Q.ORDER_DETAILS, withLines: true, params: [{ name: 'docentry', type: 'int' }] },
+  GetQuotationDetails: { sql: Q.QUOTATION_DETAILS, withLines: true, params: [{ name: 'docentry', type: 'int' }] },
+  sp_GetQuotation: { sql: Q.QUOTATION_FULL, withLines: true, params: [{ name: 'docentry', type: 'int' }] },
   // Today's planned (open) activities of a salesperson, with customer and subject - each shop's own proc
   // (Tanzania's also returns contact time/date and the checked-in flag).
   BZ_CRM_Get_Cust_for_saleCall: { proc: 'BZ_CRM_Get_Cust_for_saleCall', params: [{ name: 'SlpCode', type: 'int' }] },
@@ -60,6 +67,8 @@ const STATEMENTS = [
   "select * from OCRG where GroupType = 'C'",
   // Payment terms
   'Select GroupNum, PymntGroup from OCTG',
+  // Active salespersons
+  "SELECT slpcode, slpname FROM OSLP WHERE Active = 'Y' ORDER BY slpname",
   // Territories (below the root)
   'Select territryID, descript From OTER where parent > 0',
   // Committed / on-order quantity of one item in one warehouse
@@ -144,7 +153,7 @@ function splitArgs(text: string): string[] {
 }
 
 /** Turns the legacy `query` text into an allowed statement (or shop proc) + bound params, or throws 400. */
-export function parseSellerkitQuery(query: string): { sql?: string; proc?: string; sap?: SapAction; params: Record<string, unknown> } {
+export function parseSellerkitQuery(query: string): { sql?: string; proc?: string; sap?: SapAction; withLines?: boolean; params: Record<string, unknown> } {
   const text = stripComments(query ?? '');
 
   const statement = STATEMENT_BY_SHAPE.get(shapeOf(text));
@@ -185,5 +194,5 @@ export function parseSellerkitQuery(query: string): { sql?: string; proc?: strin
     }
     params[p.name] = p.type === 'int' || p.type === 'decimal' ? Number(args[i]) : args[i];
   });
-  return { sql: def.sql, proc: def.proc, sap: def.sap?.(params), params };
+  return { sql: def.sql, proc: def.proc, sap: def.sap?.(params), ...(def.withLines ? { withLines: true } : {}), params };
 }

@@ -23,7 +23,7 @@ export class SellerkitController {
   @HttpCode(200)
   async run(@CurrentUser() user: AuthenticatedRequestUser, @Body() body: SellerkitDto): Promise<InsigRes<string | null> & { msg: string }> {
     const reply = (status: boolean, message: string, data: string | null = null) => ({ status, message, msg: message, data });
-    const { sql, proc, sap, params } = parseSellerkitQuery(body.query);
+    const { sql, proc, sap, withLines, params } = parseSellerkitQuery(body.query);
     if (sap) {
       // A change: done as the logged-in user in SAP itself. Legacy procs ended with "Select 1".
       await this.sap.request(user.sap, sap.method, sap.path, sap.body);
@@ -31,7 +31,13 @@ export class SellerkitController {
     }
     let rows: Record<string, unknown>[];
     try {
-      rows = proc ? await this.db.execProc(user.tenantCode, 'sapDb', proc, params) : await this.db.query(user.tenantCode, 'sapDb', sql!, params);
+      if (withLines) {
+        // header + lines as two result sets: the items go on the header row as DocumentLines
+        const [head = [], lines = []] = await this.db.querySets<Record<string, unknown>>(user.tenantCode, 'sapDb', sql!, params);
+        rows = head.map((h) => ({ ...h, DocumentLines: lines }));
+      } else {
+        rows = proc ? await this.db.execProc(user.tenantCode, 'sapDb', proc, params) : await this.db.query(user.tenantCode, 'sapDb', sql!, params);
+      }
     } catch (err) {
       // SQL Server 2812: the shop's database doesn't have this procedure (e.g. Zambia has no approval check)
       if ((err as { number?: number }).number === 2812) {

@@ -148,3 +148,36 @@ FROM UFD1 v
 INNER JOIN CUFD f ON f.TableID = v.TableID AND f.FieldID = v.FieldID
 WHERE f.TableID = 'OCRD' AND f.AliasID = 'SaleType'
 ORDER BY v.IndexID`;
+
+// A customer's tax code (the customer's tax group, ECVatGroup) - the same field and 'O1' default CustomerMaster reports
+// as TaxCode. Used to add TaxCode to each shop's own BZ_CRM_GET_CUST_SLPCODE rows, whose columns differ per shop.
+export const CUSTOMER_TAX_CODES = `
+SELECT CardCode, COALESCE(NULLIF(LTRIM(RTRIM(ECVatGroup)), ''), 'O1') AS TaxCode
+FROM OCRD
+WHERE CardType = 'C'`;
+
+// Sales dashboard for one salesperson. Recordset 1: totals per period - Day is the calendar date @day picked in the UI;
+// Week (Monday-Sunday), Month and Year are always the current ones, so the date filter does not move them. Recordset 2:
+// quantity sold per product within each period (the service keeps each period's top 4 and folds the rest into "Others").
+// Own, non-cancelled sales orders only; the amount is DocTotal (tax included), the same as the TodaySoldAmount login claim.
+export const SALES_SUMMARY = `
+DECLARE @d date = @day;
+DECLARE @t date = CAST(GETDATE() AS date);
+DECLARE @wk date = DATEADD(day, -(DATEDIFF(day, '19000101', @t) % 7), @t);
+DECLARE @p TABLE (Period varchar(5), FromDate date, ToDate date);
+INSERT @p VALUES ('Day', @d, @d),
+  ('Week', @wk, DATEADD(day, 6, @wk)),
+  ('Month', DATEFROMPARTS(YEAR(@t), MONTH(@t), 1), EOMONTH(@t)),
+  ('Year', DATEFROMPARTS(YEAR(@t), 1, 1), DATEFROMPARTS(YEAR(@t), 12, 31));
+SELECT p.Period, COUNT(o.DocEntry) AS Orders, ISNULL(SUM(o.DocTotal), 0) AS Amount,
+  ISNULL(SUM(q.Quantity), 0) AS Quantity
+FROM @p p
+LEFT JOIN ORDR o ON o.SlpCode = @slpcode AND o.CANCELED = 'N' AND o.DocDate BETWEEN p.FromDate AND p.ToDate
+OUTER APPLY (SELECT SUM(l.Quantity) AS Quantity FROM RDR1 l WHERE l.DocEntry = o.DocEntry) q
+GROUP BY p.Period;
+SELECT p.Period, l.ItemCode, MAX(l.Dscription) AS ItemName, SUM(l.Quantity) AS Quantity
+FROM @p p
+INNER JOIN ORDR o ON o.SlpCode = @slpcode AND o.CANCELED = 'N' AND o.DocDate BETWEEN p.FromDate AND p.ToDate
+INNER JOIN RDR1 l ON l.DocEntry = o.DocEntry
+GROUP BY p.Period, l.ItemCode
+ORDER BY p.Period, SUM(l.Quantity) DESC, l.ItemCode`;

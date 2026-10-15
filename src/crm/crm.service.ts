@@ -8,6 +8,7 @@ import * as Q from './sap-queries.js';
 import type { DbKind, InsigRes, SapIdentity } from '../common/types.js';
 import type {
   ActivitesDTO,
+  FeedbackDTO,
   BusinessPartnerRequest,
   CheckedInDTO,
   CheckedoutDTO,
@@ -249,12 +250,41 @@ export class CrmService {
       .then((rows) => (rows.length > 0 ? { status: true, message: 'Success', data: rows } : { status: false, message: 'No data found' }));
   }
 
+  // Day total for the chosen date (default today) + this week / month / year (always current), each with its top 4 products and "Others".
+  async getSalesSummary(tenantCode: string, date: string | undefined, slpCode: number) {
+    if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+    const day = date ?? new Date().toLocaleDateString('en-CA'); // server-local date, YYYY-MM-DD
+    const [periods = [], products = []] = await this.db.querySets<Record<string, number | string>>(tenantCode, 'sapDb', Q.SALES_SUMMARY, { day, slpcode: slpCode });
+    const num = (v: unknown) => Number(v ?? 0);
+    const topFor = (period: unknown) => {
+      const rows = products.filter((r) => r.Period === period);
+      const top = rows.slice(0, 4).map((r) => ({ ItemCode: r.ItemCode, ItemName: r.ItemName, Quantity: num(r.Quantity) }));
+      const others = rows.slice(4).reduce((sum, r) => sum + num(r.Quantity), 0);
+      return [...top, ...(rows.length > 4 ? [{ ItemCode: 'OTHERS', ItemName: 'Others', Quantity: others }] : [])];
+    };
+    return {
+      status: true,
+      message: 'Success',
+      data: {
+        Date: day,
+        Periods: periods.map((p) => ({ Period: p.Period, Orders: num(p.Orders), Quantity: num(p.Quantity), Amount: num(p.Amount), TopProducts: topFor(p.Period) })),
+      },
+    };
+  }
+
   getPlanDetails(tenantCode: string, date: string | undefined, slpCode: number) {
     return this.runSapQuery(tenantCode, Q.PLAN_DETAILS, { selecteddate: date ?? null, slpcode: slpCode });
   }
 
-  getCustomerDetailsBySalesperson(tenantCode: string, slpCode: number) {
-    return this.runProc(tenantCode, 'sapDb', 'BZ_CRM_GET_CUST_SLPCODE', { slpcode: slpCode });
+  // Each shop's own proc decides which customers a salesperson sees; its columns differ per shop and none returns the
+  // customer's tax code, so TaxCode is added to every row here.
+  async getCustomerDetailsBySalesperson(tenantCode: string, slpCode: number) {
+    const res = await this.runProc<Record<string, unknown>>(tenantCode, 'sapDb', 'BZ_CRM_GET_CUST_SLPCODE', { slpcode: slpCode });
+    if (!res.data?.length) return res;
+    const taxByCustomer = new Map((await this.db.query<{ CardCode: string; TaxCode: string }>(tenantCode, 'sapDb', Q.CUSTOMER_TAX_CODES)).map((r) => [r.CardCode, r.TaxCode]));
+    return { ...res, data: res.data.map((row) => ({ ...row, TaxCode: taxByCustomer.get(String(row.CardCode)) ?? 'O1' })) };
   }
 
   getQuotationDetails(tenantCode: string, docEntry: number) {
@@ -545,8 +575,8 @@ export class CrmService {
   }
 
   async saveDraftAsDocument(sap: SapIdentity, docEntry: number): Promise<InsigRes> {
-    // Service Layer's equivalent of the DI-API's Documents.SaveDraftToDocument().
-    await this.sap.request(sap, 'post', `Drafts(${docEntry})/DraftToDocument`, {});
+    // Service Layer's equivalent of the DI-API's Documents.SaveDraftToDocument() (a Drafts(n)/... route does not exist).
+    await this.sap.request(sap, 'post', 'DraftsService_SaveDraftToDocument', { Document: { DocEntry: docEntry } });
     return { status: true, message: 'order saved Successfully' };
   }
 
@@ -565,6 +595,46 @@ export class CrmService {
     };
     const created = await this.sap.request<{ ClgCode: number }>(sap, 'post', 'Activities', payload);
     return { status: true, message: 'Activity Created sucessfully', data: created };
+  }
+
+  // Feedback = a 'Customer Feedback' phone-call Activity. Shops differ in which U_ fields exist on OCLG (Zambia has no
+  // PrdCd/AppTyp), so only the fields the shop has are sent; a product code with nowhere to go is added to the remarks.
+  async saveFeedback(sap: SapIdentity, tenantCode: string, feedback: FeedbackDTO): Promise<InsigRes<{ ClgCode: number }>> {
+    const udfs = new Set((await this.db.query<{ AliasID: string }>(tenantCode, 'sapDb', "SELECT AliasID FROM CUFD WHERE TableID = 'OCLG'")).map((r) => r.AliasID));
+    // Subject (OCLS) belongs to an activity Type (OCLT, e.g. General); both dropdowns in SAP come from those setup tables.
+    const [subject] = await this.db.query<{ Code: number; Type: number }>(
+      tenantCode,
+      'sapDb',
+      'SELECT TOP 1 Code, Type FROM OCLS WHERE ' + (feedback.Subject === undefined ? "Name = 'Customer Feedback'" : 'Code = @code'),
+      { code: feedback.Subject },
+    );
+    if (!subject) {
+      throw new BadRequestException(feedback.Subject === undefined ? 'This shop has no "Customer Feedback" activity subject; send Subject' : 'Unknown activity Subject for this shop');
+    }
+    const now = new Date();
+    const payload: Record<string, unknown> = {
+      CardCode: feedback.CardCode,
+      SalesEmployee: feedback.SalesEmployee,
+      Activity: 'cn_Conversation',
+      ActivityType: subject.Type,
+      Subject: subject.Code,
+      StartDate: now.toLocaleDateString('en-CA'),
+      StartTime: now.toTimeString().slice(0, 5),
+      Details: feedback.Details,
+    };
+    for (const name of ['U_PrdCd', 'U_Complaints', 'U_AppTyp', 'U_Link1', 'U_Link2', 'U_Link3', 'U_Link4'] as const) {
+      const value = feedback[name];
+      if (value === undefined) {
+        continue;
+      }
+      if (udfs.has(name.slice(2))) {
+        payload[name] = value;
+      } else if (name === 'U_PrdCd') {
+        payload.Details = `${payload.Details ?? ''} Product: ${value}`.trim();
+      }
+    }
+    const created = await this.sap.request<{ ClgCode: number }>(sap, 'post', 'Activities', payload);
+    return { status: true, message: 'Feedback saved successfully', data: { ClgCode: created.ClgCode } };
   }
 
   async updateActivity(sap: SapIdentity, clgCode: number, activity: ActivitesDTO): Promise<InsigRes> {

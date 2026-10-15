@@ -46,7 +46,7 @@ describe('App (e2e)', () => {
   };
 
   beforeEach(async () => {
-    db = { execProc: vi.fn(), execProcSets: vi.fn(), query: vi.fn(), withTransaction: vi.fn() };
+    db = { execProc: vi.fn(), execProcSets: vi.fn(), query: vi.fn(), querySets: vi.fn(), withTransaction: vi.fn() };
     sap = { verifyCredentials: vi.fn().mockResolvedValue(undefined), checkCredentials: vi.fn().mockResolvedValue(undefined), request: vi.fn() };
     app = await createTestApp({ db, sap });
     dbAnswers();
@@ -208,6 +208,23 @@ describe('App (e2e)', () => {
       expect(payload.DocumentLines).toEqual([
         { ItemCode: '10101W001A', ItemDescription: 'ALKALI RESISTING PRIMER (WB) WHITE - 20 LT', Quantity: 12, UnitPrice: 2000, DiscountPercent: 0, VatGroup: '01', ShipDate: '2026-09-30', WarehouseCode: 'KEFG', Currency: 'TZS' },
       ]);
+    });
+
+    it('Sellerkit [Getdraftdetails] returns the header row with the items attached as DocumentLines', async () => {
+      const token = await login();
+      db.querySets.mockResolvedValue([
+        [{ DocEntry: 102, BPCode: 'C0006', DocumentDate: new Date('2026-10-03T00:00:00Z') }],
+        [{ LineNum: 0, ItemCode: 'A1', Quantity: 12 }, { LineNum: 1, ItemCode: 'B2', Quantity: 3 }],
+      ]);
+      const res = await request(app.getHttpServer()).post('/api/Tanzania/Sellerkit').set('Authorization', `Bearer ${token}`).send({ constr: 'ignored', query: '[Getdraftdetails] 102' }).expect(200);
+      expect(JSON.parse(res.body.data)).toEqual([
+        { DocEntry: 102, BPCode: 'C0006', DocumentDate: '2026-10-03T00:00:00', DocumentLines: [{ LineNum: 0, ItemCode: 'A1', Quantity: 12 }, { LineNum: 1, ItemCode: 'B2', Quantity: 3 }] },
+      ]);
+      expect(db.querySets).toHaveBeenCalledWith('TZ', 'sapDb', expect.stringContaining('FROM ODRF T0'), { docentry: 102 });
+
+      db.querySets.mockResolvedValue([[], []]);
+      const none = await request(app.getHttpServer()).post('/api/Tanzania/Sellerkit').set('Authorization', `Bearer ${token}`).send({ query: '[Getdraftdetails] 999' }).expect(200);
+      expect(none.body).toMatchObject({ status: false, message: 'No data found' });
     });
 
     it('no longer serves the earlier Node-style paths', async () => {
